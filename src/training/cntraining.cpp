@@ -223,7 +223,7 @@ int main(int argc, char *argv[]) {
         tesseract::Config.Independence = std::max<float>(0.0f, std::min<float>(1.0f, tesseract::Config.Independence));
         tesseract::Config.Confidence = std::max<float>(0.0f, std::min<float>(1.0f, tesseract::Config.Confidence));
 
-        auto read_result = ReadAndWrapTrainingSamples(feature_defs, const_cast<const char**>(argv));
+        auto read_result = ReadAndWrapTrainingSamples(feature_defs, const_cast<const char**>(argv + 1));
         std::vector<LabeledProtoListCpp> char_list_cpp = std::move(read_result.first);
         original_char_list_c = read_result.second;
 
