@@ -1,10 +1,10 @@
 /******************************************************************************
  *
- * File:        cntraining.cpp (Rewritten version of cntraining.cpp)
- * Purpose:     Generates normproto and pffmtable using modern C++ practices.
+ * File:        cntraining_modern.cpp (Rewritten version of cntraining.cpp)
+ * Purpose:     Generates normproto using modern C++ practices.
  *              Interfaces with Tesseract's C API for core functionality.
  * Author:      Based on original Tesseract code by Dan Johnson, Christy Russon
- *              C++ Rewrite Contributor: AI Assistant (Claude/ChatGPT/Gemini)
+ *              C++ Rewrite Contributor: AI Assistant
  *
  * Original License (Apache 2.0):
  * (c) Copyright Hewlett-Packard Company, 1988.
@@ -24,8 +24,8 @@
 #define _USE_MATH_DEFINES
 
 // Standard C++ Headers
-#include <cmath>       // for M_PI, std::pow, std::sqrt, std::log
-#include <cstdio>      // for FILE, fopen, fprintf, fclose, sscanf
+#include <cmath>       // for M_PI, std::pow, std::sqrt, std::log, std::max, std::min
+#include <cstdio>      // for FILE, fopen, fprintf, fclose, sscanf, perror
 #include <cstring>     // for memset
 #include <vector>      // for std::vector
 #include <string>      // for std::string
@@ -39,9 +39,9 @@
 #include <tesseract/baseapi.h> // For CheckSharedLibraryVersion, TessBaseAPI::Version()
 
 #include "cluster.h"         // PROTOTYPE, CLUSTERER, CLUSTERCONFIG, FreeProtoList, FreeClusterer, MakeClusterer, MakeSample, ClusterSamples
-#include "clusttool.h"       // WritePrototype, WriteParamDesc (and potentially others if needed)
-#include "commontraining.h"  // ReadTrainingSamples, FreeTrainingSamples, LABELEDLIST, FEATURE_DEFS_STRUCT, ParseArguments, SetUpForClustering
-#include "featdefs.h"        // InitFeatureDefs, ShortNameToFeatureType, FEATURE_DESC_STRUCT, PARAM_DESC
+#include "clusttool.h"       // WritePrototype, WriteParamDesc
+#include "commontraining.h"  // ReadTrainingSamples, FreeTrainingSamples, LABELEDLIST, FEATURE_DEFS_STRUCT, ParseArguments, SetUpForClustering, Config (global)
+#include "featdefs.h"        // InitFeatureDefs, ShortNameToFeatureType, FEATURE_DEFS_STRUCT, PARAM_DESC
 #include "intproto.h"        // Needed by commontraining.h potentially
 #include "oldlist.h"         // For the LIST type definition and iterate macros (crucial for C API interaction)
 #include "params.h"          // For command line flags (FLAGS_D)
@@ -240,8 +240,9 @@ static void WriteProtosCpp(FILE *file, uint16_t n_params, // n = NumParams
 
 // --- Global Clustering Configuration ---
 // Initialized with default values from original code comment or commonTraining.h defaults
-// TODO: Make this configurable via flags or a config file if needed beyond command-line overrides.
-static CLUSTERCONFIG CNConfig = {elliptical, 0.025, 0.05, 0.8, 1e-3, 0};
+// This is extern in commontraining.h and defined in commontraining.cpp. We don't
+// need a static copy here, but we use CNConfig below for defaults before ParseArgs.
+static CLUSTERCONFIG CNConfigDefaults = {elliptical, 0.025, 0.05, 0.8, 1e-3, 0};
 
 
 // --- Main Function ---
@@ -250,29 +251,24 @@ int main(int argc, char *argv[]) {
     try {
         tesseract::CheckSharedLibraryVersion(); // Verify library compatibility
 
-        // Set the global Config parameters from defaults.
-        // ParseArguments below will override these with command-line flags.
-        Config = CNConfig;
+        // Set the Tesseract global Config parameters from our defaults FIRST.
+        // ParseArguments will overwrite these with command-line flag values.
+        // Note: We access the 'Config' declared extern in commontraining.h
+        tesseract::Config = CNConfigDefaults;
 
         FEATURE_DEFS_STRUCT feature_defs;
         InitFeatureDefs(&feature_defs); // Initialize Tesseract's feature definitions
 
-        // Use Tesseract's C API for argument parsing. It modifies argc/argv
-        // and sets global flags like FLAGS_D, FLAGS_clusterconfig_*.
+        // Use Tesseract's C API for argument parsing. This function reads command-line
+        // flags (like --clusterconfig_min_samples_fraction) AND UPDATES THE GLOBAL Config struct.
         ParseArguments(&argc, &argv); // argv should now point to the first filename
 
-        // Update Config struct from parsed flags (matching original ParseArguments logic)
-        // Ensure these flag names match those defined in commontraining.cpp/params.cpp
-        // Using temporary variables to avoid potential issues with flag types vs Config types
-        double temp_min_samples = FLAGS_clusterconfig_min_samples_fraction;
-        double temp_max_illegal = FLAGS_clusterconfig_max_illegal;
-        double temp_independence = FLAGS_clusterconfig_independence;
-        double temp_confidence = FLAGS_clusterconfig_confidence;
-
-        Config.MinSamples = std::max(0.0, std::min(1.0, temp_min_samples));
-        Config.MaxIllegal = std::max(0.0, std::min(1.0, temp_max_illegal));
-        Config.Independence = std::max(0.0, std::min(1.0, temp_independence));
-        Config.Confidence = std::max(0.0, std::min(1.0, temp_confidence));
+        // Optionally apply clamping to the global Config values AFTER ParseArguments,
+        // mimicking the behavior in the original commontraining.cpp ParseArguments.
+        tesseract::Config.MinSamples = std::max(0.0, std::min(1.0, tesseract::Config.MinSamples));
+        tesseract::Config.MaxIllegal = std::max(0.0, std::min(1.0, tesseract::Config.MaxIllegal));
+        tesseract::Config.Independence = std::max(0.0, std::min(1.0, tesseract::Config.Independence));
+        tesseract::Config.Confidence = std::max(0.0, std::min(1.0, tesseract::Config.Confidence));
 
         // Read training samples using C API, wrap results in C++ structs,
         // but keep the original C LIST alive for SetUpForClustering.
@@ -302,7 +298,7 @@ int main(int argc, char *argv[]) {
                 continue; // Skip this character if data is inconsistent
             }
             // SetUpForClustering takes LABELEDLIST (which is LABELEDLISTNODE*)
-            // Cast away constness if necessary, assuming SetUpForClustering doesn't modify it.
+            // Cast away constness is safe as we verified SetUpForClustering only reads.
             LABELEDLIST c_list_for_setup = const_cast<LABELEDLIST>(char_sample_cpp.original_c_list_node);
 
             // Set up the clusterer using the C API, managed by RAII wrapper
@@ -315,20 +311,22 @@ int main(int argc, char *argv[]) {
             }
 
             // Store original MinSamples, as it might be modified in the retry loop
-            float saved_min_samples = Config.MinSamples;
+            // Use the global Config struct directly (already updated by ParseArguments)
+            float saved_min_samples = tesseract::Config.MinSamples;
             // Set MagicSamples based on the initial sample count for this character
-            Config.MagicSamples = char_sample_cpp.sample_count;
+            tesseract::Config.MagicSamples = char_sample_cpp.sample_count;
 
             std::vector<ProtoDataCpp> clustered_protos_cpp; // Holds copied results for this char
             bool cluster_success = false;
 
             // --- Clustering Retry Loop ---
-            while (Config.MinSamples > 0.001 && !cluster_success) {
+            // Use the global Config struct directly here as well
+            while (tesseract::Config.MinSamples > 0.001 && !cluster_success) {
                 fprintf(stderr, "DEBUG: Calling ClusterSamples for %s with MinSamples=%.4f\n",
-                        char_sample_cpp.label.c_str(), Config.MinSamples);
+                        char_sample_cpp.label.c_str(), tesseract::Config.MinSamples);
 
-                // Call the core C clustering function
-                LIST c_result_list = ClusterSamples(clusterer_wrapper.get(), &Config);
+                // Call the core C clustering function, passing address of global Config
+                LIST c_result_list = ClusterSamples(clusterer_wrapper.get(), &tesseract::Config);
 
                 clustered_protos_cpp.clear(); // Clear results from previous retry attempt
                 size_t num_significant = 0;
@@ -348,9 +346,7 @@ int main(int argc, char *argv[]) {
                     }
                     // IMPORTANT: Free the C list and C prototypes returned by ClusterSamples
                     // Pass address because FreeProtoList takes LIST* and modifies it (sets to NIL).
-                    // fprintf(stderr, "DEBUG: Freeing C ProtoList %p from ClusterSamples\n", c_result_list);
                     FreeProtoList(&c_result_list);
-                    // fprintf(stderr, "DEBUG: Finished freeing C ProtoList\n");
                 } // else: c_result_list was NIL, nothing to copy or free
 
                 fprintf(stderr, "DEBUG: ClusterSamples produced %zu significant protos\n", num_significant);
@@ -360,11 +356,10 @@ int main(int argc, char *argv[]) {
                 } else {
                     // No significant protos, reduce threshold and retry
                     fprintf(stderr, "Warning: 0 significant protos for %s. Retrying...\n", char_sample_cpp.label.c_str());
-                    Config.MinSamples *= 0.95; // Decrease MinSamples requirement
-                    // clustered_protos_cpp is already clear for the next attempt
+                    tesseract::Config.MinSamples *= 0.95; // Decrease MinSamples requirement
                 }
             } // End retry loop
-            Config.MinSamples = saved_min_samples; // Restore original MinSamples setting
+            tesseract::Config.MinSamples = saved_min_samples; // Restore original MinSamples setting
 
             // --- Process Clustering Result ---
             if (cluster_success) {
@@ -379,7 +374,6 @@ int main(int argc, char *argv[]) {
             } else {
                 std::cerr << "Error: Failed to generate significant protos for "
                           << char_sample_cpp.label << " even after retries." << std::endl;
-                // clustered_protos_cpp is empty from the last failed attempt or clear()
             }
             // clusterer_wrapper goes out of scope here, automatically calling FreeClusterer via destructor
         } // End loop over characters
@@ -388,6 +382,7 @@ int main(int argc, char *argv[]) {
         // --- Write Output ---
         // Find the feature description index needed for writing the normproto header
         int desc_index = ShortNameToFeatureType(feature_defs, PROGRAM_FEATURE_TYPE);
+        // Corrected access to NumFeatureDescs (removed leading space)
         if (desc_index < 0 || desc_index >= feature_defs.NumFeatureDescs) {
              std::cerr << "Error: Feature type '" << PROGRAM_FEATURE_TYPE << "' not found!" << std::endl;
              // Need to free C list before exiting
@@ -395,7 +390,7 @@ int main(int argc, char *argv[]) {
              return EXIT_FAILURE;
         }
 
-        // Get output directory from command-line flags (parsed by ParseArguments)
+        // Get output directory from command-line flags (parsed by ParseArguments into global FLAGS_D)
         std::string output_dir = FLAGS_D.c_str();
 
         // Write the normproto file using the collected C++ data structures
@@ -468,7 +463,7 @@ static std::pair<std::vector<LabeledProtoListCpp>, LIST> ReadAndWrapTrainingSamp
             continue; // Skip this file
         }
         // ReadTrainingSamples appends to the list passed by pointer (&char_list_c)
-        // Max samples set to 0 or a large number means read all (original used 100?). Using 0 for all.
+        // Max samples set to 0 means read all.
         ReadTrainingSamples(feature_defs, PROGRAM_FEATURE_TYPE, 0 /*max_samples*/,
                             nullptr /*unicharset ptr, not needed here*/, training_page, &char_list_c);
         fclose(training_page);
@@ -539,16 +534,12 @@ static void WriteNormProtosCpp(const std::string& directory,
     output_path /= "normproto"; // Append the standard filename
 
     std::cout << "\nWriting " << output_path.string() << " ..." << std::flush;
-    // Open file using C stdio
-    FILE *file = fopen(output_path.string().c_str(), "wb"); // Use "wb" for binary? Original used text. Sticking to text "w". TODO: Verify binary vs text mode. Using "wb" as safer default often.
-     if (!file) {
-         file = fopen(output_path.string().c_str(), "w"); // Try text mode if binary fails? Or just fail.
-     }
+    // Open file using C stdio. Using "w" (text mode) as normproto is textual.
+    FILE *file = fopen(output_path.string().c_str(), "w");
 
     if (!file) {
         std::cerr << "\nError: Cannot open output file '" << output_path.string() << "' for writing!" << std::endl;
         perror("fopen failed"); // Print system error message
-        // Consider throwing an exception instead of just returning
         return; // Or throw std::runtime_error("Failed to open normproto file");
     }
 
@@ -606,10 +597,8 @@ static void WriteProtosCpp(FILE *file, uint16_t n_params,
             (!proto_data_cpp.significant && write_insig_protos))
         {
             // --- Reconstruct a temporary C PROTOTYPE on the stack ---
-            // This structure holds the data in the format expected by WritePrototype.
             PROTOTYPE temp_proto_c;
-            // Zero out the structure first to avoid uninitialized padding/pointers
-            memset(&temp_proto_c, 0, sizeof(temp_proto_c));
+            memset(&temp_proto_c, 0, sizeof(temp_proto_c)); // Zero out structure
 
             // Copy fields required by WritePrototype from the C++ struct
             temp_proto_c.Significant = proto_data_cpp.significant;
@@ -619,26 +608,23 @@ static void WriteProtosCpp(FILE *file, uint16_t n_params,
             temp_proto_c.Distrib = proto_data_cpp.distrib; // Copy vector (used only if Style==mixed)
             temp_proto_c.Mean = proto_data_cpp.mean;       // Copy vector
 
-            // Only Variance field is needed by WritePrototype, not Magnitude/Weight etc.
-            // Need temporary storage for elliptical variance array if FLOATUNION needs it
-            std::vector<float> temp_ellip_var;
+            // Only Variance field is needed by WritePrototype
+            std::vector<float> temp_ellip_var; // Temporary storage if needed
 
             if (temp_proto_c.Style == spherical) {
                 temp_proto_c.Variance.Spherical = proto_data_cpp.spherical_variance;
                 temp_proto_c.Variance.Elliptical = nullptr; // Ensure pointer is null
             } else { // Elliptical or mixed
-                temp_proto_c.Variance.Spherical = 0.0f; // Set spherical to 0? Or doesn't matter? Set 0.
+                temp_proto_c.Variance.Spherical = 0.0f; // Set default
 
                 // Point the Elliptical pointer to the data in the copied C++ vector.
-                // Create a temporary copy if WritePrototype might modify it (unlikely).
-                // Sticking with direct pointing for efficiency, assuming read-only access.
                 temp_ellip_var = proto_data_cpp.elliptical_variance; // Copy vector content
                 // Point to the data buffer of the temporary vector
                 temp_proto_c.Variance.Elliptical = temp_ellip_var.empty() ? nullptr : temp_ellip_var.data();
             }
+            // --- End Reconstruction ---
 
             // Call the Tesseract C API function to write this single prototype
-            // Pass the address of the temporary stack-allocated structure.
             WritePrototype(file, n_params, &temp_proto_c);
         }
     } // End loop over prototypes for this character
